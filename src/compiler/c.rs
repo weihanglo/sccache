@@ -666,6 +666,48 @@ where
             self.executable.to_string_lossy(),
             self.executable_digest
         );
+        let hash_inputs = if super::hash_inputs::hash_inputs_enabled() {
+            let pp_digest = {
+                let pp_to_hash = strip_basedirs(&preprocessor_output, storage.basedirs());
+                let mut d = Digest::new();
+                d.update(&pp_to_hash);
+                d.finish()
+            };
+            Some(super::hash_inputs::HashInputs::CCpp(
+                super::hash_inputs::CCppHashInputs {
+                    hash_key: key.clone(),
+                    output_file: self.parsed_args.output_pretty().into_owned(),
+                    cache_version: String::from_utf8_lossy(CACHE_VERSION).into_owned(),
+                    compiler_digest: self.executable_digest.clone(),
+                    plusplus: self.compiler.plusplus(),
+                    language: self.parsed_args.language.as_str().to_string(),
+                    arguments: common_and_arch_args
+                        .iter()
+                        .map(|a| a.to_string_lossy().into_owned())
+                        .collect(),
+                    extra_hashes: extra_hashes.clone(),
+                    env_vars: env_vars
+                        .iter()
+                        .filter(|(k, _)| CACHED_ENV_VARS.contains(k.as_os_str()))
+                        .map(|(k, v)| {
+                            (
+                                k.to_string_lossy().into_owned(),
+                                v.to_string_lossy().into_owned(),
+                            )
+                        })
+                        .collect(),
+                    preprocessor_output_digest: pp_digest,
+                    basedirs: storage
+                        .basedirs()
+                        .iter()
+                        .map(|b| String::from_utf8_lossy(b).into_owned())
+                        .collect(),
+                },
+            ))
+        } else {
+            None
+        };
+
         Ok(HashResult {
             key,
             compilation: Box::new(CCompilation {
@@ -679,7 +721,7 @@ where
                 env_vars,
             }),
             weak_toolchain_key,
-            hash_inputs: None,
+            hash_inputs,
         })
     }
 
