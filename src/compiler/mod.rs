@@ -23,6 +23,7 @@ mod compiler;
 mod cudafe;
 mod diab;
 mod gcc;
+pub(crate) mod hash_inputs;
 mod msvc;
 mod nvcc;
 mod nvhpc;
