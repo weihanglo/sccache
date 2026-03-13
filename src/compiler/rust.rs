@@ -27,7 +27,7 @@ use crate::dist::pkg;
 use crate::lru_disk_cache::{LruCache, Meter};
 use crate::mock_command::{CommandCreatorSync, RunCommand};
 use crate::util::{Digest, fmt_duration_as_secs, hash_all, hash_all_archives, run_input_output};
-use crate::util::{HashToDigest, OsStrExt};
+use crate::util::HashToDigest;
 use crate::{counted_array, dist};
 use async_trait::async_trait;
 use filetime::FileTime;
@@ -236,6 +236,20 @@ static ALLOWED_EMIT: LazyLock<HashSet<&'static str>> =
 
 /// Version number for cache key.
 const CACHE_VERSION: &[u8] = b"6";
+
+/// Whether a `CARGO_*` env var should be included in the hash key.
+///
+/// Used by both the hash computation and the hash input dump
+/// to keep them in sync.
+fn is_hashed_cargo_env_var(var: &OsString) -> bool {
+    let Some(var) = var.to_str() else {
+        return false;
+    };
+    var.starts_with("CARGO_")
+        && var != "CARGO_MAKEFLAGS"
+        && !var.starts_with("CARGO_REGISTRIES_")
+        && var != "CARGO_BUILD_JOBS"
+}
 
 /// Get absolute paths for all source files and env-deps listed in rustc's dep-info output.
 async fn get_source_files_and_env_deps<T>(
@@ -1484,6 +1498,30 @@ where
                 })
         };
         args.hash(&mut HashToDigest { digest: &mut m });
+        // Capture hash inputs before they are consumed, when dump is enabled
+        let captured_hashes = if super::hash_inputs::hash_inputs_enabled() {
+            Some((
+                source_files
+                    .iter()
+                    .zip(source_hashes.iter())
+                    .map(|(f, h)| (f.to_string_lossy().into_owned(), h.clone()))
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+                abs_externs
+                    .iter()
+                    .zip(extern_hashes.iter())
+                    .map(|(f, h)| (f.to_string_lossy().into_owned(), h.clone()))
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+                abs_staticlibs
+                    .iter()
+                    .zip(staticlib_hashes.iter())
+                    .map(|(f, h)| (f.to_string_lossy().into_owned(), h.clone()))
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+                target_json_hash.first().cloned(),
+            ))
+        } else {
+            None
+        };
+
         // 4. The digest of all source files (this includes src file from cmdline).
         // 5. The digest of all files listed on the commandline (self.externs).
         // 6. The digest of all static libraries listed on the commandline (self.staticlibs).
@@ -1514,19 +1552,7 @@ where
             .collect();
         env_vars.sort();
         for (var, val) in env_vars.iter() {
-            if !var.starts_with("CARGO_") {
-                continue;
-            }
-
-            // CARGO_MAKEFLAGS will have jobserver info which is extremely non-cacheable.
-            // CARGO_REGISTRIES_*_TOKEN contains non-cacheable secrets.
-            // Registry override config doesn't need to be hashed, because deps' package IDs
-            // already uniquely identify the relevant registries.
-            // CARGO_BUILD_JOBS only affects Cargo's parallelism, not rustc output.
-            if var == "CARGO_MAKEFLAGS"
-                || var.starts_with("CARGO_REGISTRIES_")
-                || var == "CARGO_BUILD_JOBS"
-            {
+            if !is_hashed_cargo_env_var(var) {
                 continue;
             }
 
@@ -1538,6 +1564,39 @@ where
         cwd.hash(&mut HashToDigest { digest: &mut m });
         // 10. The version of the compiler.
         self.version.hash(&mut HashToDigest { digest: &mut m });
+
+        let hash_key = m.finish();
+
+        let hash_inputs = captured_hashes.map(
+            |(source_hashes_map, extern_hashes_map, staticlib_hashes_map, target_json_h)| {
+                super::hash_inputs::HashInputs::Rust(super::hash_inputs::RustHashInputs {
+                    hash_key: hash_key.clone(),
+                    output_file: self.parsed_args.crate_name.clone(),
+                    cache_version: String::from_utf8_lossy(CACHE_VERSION).into_owned(),
+                    compiler_shlibs_digests: self.compiler_shlibs_digests.clone(),
+                    arguments: args.to_string_lossy().into_owned(),
+                    source_hashes: source_hashes_map,
+                    extern_hashes: extern_hashes_map,
+                    staticlib_hashes: staticlib_hashes_map,
+                    target_json_hash: target_json_h,
+                    env_deps: env_deps
+                        .iter()
+                        .map(|(k, v)| {
+                            (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned())
+                        })
+                        .collect(),
+                    cargo_env_vars: env_vars
+                        .iter()
+                        .filter(|(k, _)| is_hashed_cargo_env_var(k))
+                        .map(|(k, v)| {
+                            (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned())
+                        })
+                        .collect(),
+                    cwd: cwd.to_string_lossy().into_owned(),
+                    compiler_version: self.version.clone(),
+                })
+            },
+        );
 
         // Turn arguments into a simple Vec<OsString> to calculate outputs.
         let flat_os_string_arguments: Vec<OsString> = os_string_arguments
@@ -1664,7 +1723,7 @@ where
             .collect();
 
         Ok(HashResult {
-            key: m.finish(),
+            key: hash_key,
             compilation: Box::new(RustCompilation {
                 executable: self.executable.clone(),
                 host: self.host.clone(),
@@ -1682,7 +1741,7 @@ where
                 rlib_dep_reader: self.rlib_dep_reader.clone(),
             }),
             weak_toolchain_key,
-            hash_inputs: None,
+            hash_inputs,
         })
     }
 
