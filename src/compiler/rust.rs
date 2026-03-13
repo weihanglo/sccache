@@ -1682,6 +1682,7 @@ where
                 rlib_dep_reader: self.rlib_dep_reader.clone(),
             }),
             weak_toolchain_key,
+            hash_inputs: None,
         })
     }
 

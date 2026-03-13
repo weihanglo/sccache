@@ -520,6 +520,7 @@ where
                                         env_vars: env_vars.clone(),
                                     }),
                                     weak_toolchain_key,
+                                    hash_inputs: None,
                                 });
                             } else {
                                 debug!("Preprocessor cache miss: {preprocessor_key}");
@@ -678,6 +679,7 @@ where
                 env_vars,
             }),
             weak_toolchain_key,
+            hash_inputs: None,
         })
     }
 

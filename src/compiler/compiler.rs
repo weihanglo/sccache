@@ -554,7 +554,7 @@ where
             out_pretty,
             fmt_duration_as_secs(&start.elapsed())
         );
-        let (key, compilation, weak_toolchain_key) = match result {
+        let (key, compilation, weak_toolchain_key, hash_inputs) = match result {
             Err(e) => {
                 return match e.downcast::<ProcessError>() {
                     Ok(ProcessError(output)) => Ok((CompileResult::Error, output)),
@@ -565,7 +565,8 @@ where
                 key,
                 compilation,
                 weak_toolchain_key,
-            }) => (key, compilation, weak_toolchain_key),
+                hash_inputs,
+            }) => (key, compilation, weak_toolchain_key, hash_inputs),
         };
         debug!("[{}]: Hash key: {}", out_pretty, key);
         // If `ForceRecache` is enabled, we won't check the cache.
@@ -687,6 +688,18 @@ where
                 Ok(CacheLookupResult::Miss(MissType::TimedOut))
             }
         }?;
+
+        if let Some(ref inputs) = hash_inputs {
+            let cache_result = match &lookup {
+                CacheLookupResult::Success(..) => "hit",
+                CacheLookupResult::Miss(MissType::Normal) => "miss",
+                CacheLookupResult::Miss(MissType::ForcedNoCache) => "forced_no_cache",
+                CacheLookupResult::Miss(MissType::ForcedRecache) => "forced_recache",
+                CacheLookupResult::Miss(MissType::CacheReadError) => "cache_read_error",
+                CacheLookupResult::Miss(MissType::TimedOut) => "timed_out",
+            };
+            super::hash_inputs::emit_hash_inputs(inputs, cache_result);
+        }
 
         match lookup {
             CacheLookupResult::Success(compile_result, output) => {
@@ -1150,6 +1163,8 @@ where
     pub compilation: Box<dyn Compilation<T> + 'static>,
     /// A weak key that may be used to identify the toolchain
     pub weak_toolchain_key: String,
+    /// Structured dump of hash inputs, populated when `SCCACHE_LOG_HASH_INPUTS` is set.
+    pub hash_inputs: Option<super::hash_inputs::HashInputs>,
 }
 
 /// Possible results of parsing compiler arguments.
